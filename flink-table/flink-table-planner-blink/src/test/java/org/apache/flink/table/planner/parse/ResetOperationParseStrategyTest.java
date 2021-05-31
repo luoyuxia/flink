@@ -16,22 +16,24 @@
  * limitations under the License.
  */
 
-package org.apache.flink.table.runtime.arrow.readers;
+package org.apache.flink.table.planner.parse;
 
-import org.apache.flink.annotation.Internal;
+import org.junit.Test;
 
-import org.apache.arrow.vector.SmallIntVector;
+import static org.junit.Assert.assertFalse;
+import static org.junit.Assert.assertTrue;
 
-/** {@link ArrowFieldReader} for SmallInt. */
-@Internal
-public final class SmallIntFieldReader extends ArrowFieldReader<Short> {
+/** Tests for {@link ResetOperationParseStrategy}. */
+public class ResetOperationParseStrategyTest {
 
-    public SmallIntFieldReader(SmallIntVector smallIntVector) {
-        super(smallIntVector);
+    @Test
+    public void testMatches() {
+        assertTrue(ResetOperationParseStrategy.INSTANCE.match("RESET"));
+        assertTrue(ResetOperationParseStrategy.INSTANCE.match("RESET table.planner"));
     }
 
-    @Override
-    public Short read(int index) {
-        return ((SmallIntVector) getValueVector()).getObject(index);
+    @Test
+    public void testDoesNotMatchQuotedKey() {
+        assertFalse(ResetOperationParseStrategy.INSTANCE.match("RESET 'table.planner'"));
     }
 }
