@@ -532,6 +532,7 @@ public class ParquetColumnarRowInputFormatTest {
                         producedType,
                         partitionKeys,
                         PartitionFieldExtractor.forFileSystem("my_default_value"),
+                        new ArrayList<>(),
                         500,
                         false,
                         true);
