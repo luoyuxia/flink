@@ -18,7 +18,6 @@
 
 package org.apache.flink.formats.parquet;
 
-import org.apache.flink.table.api.Table;
 import org.apache.flink.table.planner.runtime.batch.sql.BatchFileSystemITCaseBase;
 import org.apache.flink.types.Row;
 
@@ -32,11 +31,7 @@ import org.junit.runners.Parameterized;
 
 import java.io.File;
 import java.io.IOException;
-import java.math.BigDecimal;
 import java.net.URI;
-import java.nio.charset.StandardCharsets;
-import java.time.LocalDateTime;
-import java.time.format.DateTimeFormatter;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
@@ -108,19 +103,19 @@ public class ParquetFileSystemITCase extends BatchFileSystemITCaseBase {
                 .executeSql(
                         String.format(
                                 "create table parquetFilterTable ("
+                                        + "x string,"
+                                        + "y int,"
                                         + "a tinyint,"
                                         + "b smallint,"
                                         + "c int,"
                                         + "d bigint,"
                                         + "e float,"
                                         + "f double,"
-                                        + "g boolean,"
-                                        + "h string,"
-                                        + "i varbinary,"
-                                        + "j decimal(5,0),"
-                                        + "k date,"
-                                        + "l time,"
-                                        + "m timestamp"
+                                        + "g string,"
+                                        + "h boolean,"
+                                        + "i decimal(8,4),"
+                                        + "j date,"
+                                        + "k timestamp"
                                         + ") with ("
                                         + "'connector' = 'filesystem',"
                                         + "'path' = '%s',"
@@ -130,118 +125,46 @@ public class ParquetFileSystemITCase extends BatchFileSystemITCaseBase {
 
     @Test
     public void testParquetFilterPushDown() throws ExecutionException, InterruptedException {
-        final LocalDateTime localDateTime = LocalDateTime.now();
-        final DateTimeFormatter dateFormatter = DateTimeFormatter.ISO_DATE;
-        final DateTimeFormatter timeFormatter = DateTimeFormatter.ISO_TIME;
-        final DateTimeFormatter dateTimeFormatter =
-                DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss");
-        final Table table =
-                super.tableEnv()
-                        .fromValues(getTestRows(localDateTime))
-                        .as("a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m");
-        super.tableEnv().createTemporaryView("parquetSource", table);
-
         super.tableEnv()
-                .executeSql("INSERT INTO parquetFilterTable SELECT * from parquetSource")
+                .executeSql(
+                        "insert into parquetFilterTable select x, y, cast(y as tinyint), "
+                                + "cast(y as smallint), y, b, "
+                                + "cast(y * 3.14 as float) as e, "
+                                + "cast(y * 3.1415 as double) as f, "
+                                + "case when a = 1 then null else x end as g, "
+                                + "case when y >= 10 then false else true end as h, "
+                                + "y * 3.14 as i, "
+                                + "date '2020-01-01' as j, "
+                                + "timestamp '2020-01-01 05:20:00' as k "
+                                + "from originalT")
                 .await();
 
-        // test tinyint/smallint/int/bigint
         check(
-                "select a from parquetFilterTable where a >= 0 and b >= 2 and c >= 6 and (d <= 7 or d = 9)",
-                Arrays.asList(Row.of(6), Row.of(7), Row.of(9)));
+                "select x, y from parquetFilterTable where x = 'x11' and 11 = y",
+                Collections.singletonList(Row.of("x11", "11")));
 
-        // test float
         check(
-                "select e from parquetFilterTable where e >= 8 and e <> 9",
-                Collections.singletonList(Row.of(8F)));
+                "select x, y from parquetFilterTable where 4 <= y and y < 8 and x <> 'x6'",
+                Arrays.asList(Row.of("x4", "4"), Row.of("x5", "5"), Row.of("x7", "7")));
 
-        // test double
         check(
-                "select f from parquetFilterTable where f <= 1 and e <> 0",
-                Collections.singletonList(Row.of(1D)));
+                "select x, y from parquetFilterTable where x = 'x1' and not y >= 3",
+                Collections.singletonList(Row.of("x1", "1")));
 
-        // test boolean
         check(
-                "select a, g from parquetFilterTable where g and a >= 6",
-                Arrays.asList(Row.of(6, true), Row.of(8, true)));
+                "select x, y from parquetFilterTable where h and y > 2 and y < 4",
+                Collections.singletonList(Row.of("x3", "3")));
 
-        // test string
         check(
-                "select a, h from parquetFilterTable where h = '6' ",
-                Collections.singletonList(Row.of(6, "6")));
+                "select x, y from parquetFilterTable where g is null and x = 'x5'",
+                Collections.singletonList(Row.of("x5", "5")));
 
-        // test decimal
         check(
-                "select a, j from parquetFilterTable where j >= 8 and j <= 9  ",
-                Arrays.asList(Row.of(8, 8), Row.of(9, 9)));
+                "select x, y from parquetFilterTable where g is not null and y > 25",
+                Arrays.asList(Row.of("x26", "26"), Row.of("x27", "27")));
 
-        // test date
-        String sql =
-                String.format(
-                        "select a, k from parquetFilterTable where k > '%s' and k <= '%s'",
-                        localDateTime.plusDays(7).format(dateFormatter),
-                        localDateTime.plusDays(9).format(dateFormatter));
         check(
-                sql,
-                Arrays.asList(
-                        Row.of(8, localDateTime.plusDays(8).toLocalDate()),
-                        Row.of(9, localDateTime.plusDays(9).toLocalDate())));
-
-        // test time
-        sql =
-                String.format(
-                        "select a, l from parquetFilterTable where l >= '%s' and l < '%s' and k > '%s'",
-                        localDateTime.plusSeconds(0).format(timeFormatter),
-                        localDateTime.plusSeconds(2).format(timeFormatter),
-                        localDateTime.plusDays(0).format(dateFormatter));
-        check(
-                sql,
-                Collections.singletonList(Row.of(1, localDateTime.plusSeconds(1).toLocalTime())));
-
-        // test timestamp
-        sql =
-                String.format(
-                        "select a, m from parquetFilterTable where m >= timestamp '%s' or m < timestamp '%s' ",
-                        localDateTime.plusSeconds(9).format(dateTimeFormatter),
-                        localDateTime.plusSeconds(1).format(dateTimeFormatter));
-        check(
-                sql,
-                Arrays.asList(
-                        Row.of(9, localDateTime.plusSeconds(9)),
-                        Row.of(0, localDateTime.plusSeconds(0))));
-
-        // test not and is not null
-        check(
-                "select a from parquetFilterTable where not a < 9 and a is not null",
-                Collections.singletonList(Row.of(9)));
-
-        // test not and not is null
-        check(
-                "select a from parquetFilterTable where not a < 9 and not a is null",
-                Collections.singletonList(Row.of(9)));
-    }
-
-    private List<Row> getTestRows(LocalDateTime localDateTime) {
-        int n = 10;
-        List<Row> rows = new ArrayList<>(n);
-        for (int i = 0; i < n; i++) {
-            Integer v = i;
-            rows.add(
-                    Row.of(
-                            v.byteValue(),
-                            v.shortValue(),
-                            v,
-                            v.longValue(),
-                            v.floatValue(),
-                            v.doubleValue(),
-                            v % 2 == 0,
-                            String.valueOf(v),
-                            String.valueOf(v).getBytes(StandardCharsets.UTF_8),
-                            BigDecimal.valueOf(v),
-                            localDateTime.plusDays(v).toLocalDate(),
-                            localDateTime.plusSeconds(v).toLocalTime(),
-                            localDateTime.plusSeconds(v)));
-        }
-        return rows;
+                "select x, y from parquetFilterTable where (g is not null and y > 26) or (g is null and x = 'x3')",
+                Arrays.asList(Row.of("x3", "3"), Row.of("x27", "27")));
     }
 }
