@@ -30,7 +30,6 @@ import org.apache.parquet.filter2.predicate.FilterPredicate;
 import org.apache.parquet.io.api.Binary;
 import org.junit.Test;
 
-import java.math.BigDecimal;
 import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collections;
@@ -39,11 +38,13 @@ import java.util.List;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertFalse;
 import static org.junit.Assert.assertNotNull;
-import static org.junit.Assert.assertNull;
 import static org.junit.Assert.assertTrue;
 
 /** Unit Tests for {@link ParquetFilters}. */
 public class ParquetFiltersTest {
+
+    private final ParquetFilters parquetFilters = new ParquetFilters(true);
+
     @Test
     public void testApplyBinaryOperationPredicate() {
         List<ResolvedExpression> args = new ArrayList<>();
@@ -59,7 +60,7 @@ public class ParquetFiltersTest {
                 new CallExpression(BuiltInFunctionDefinitions.EQUALS, args, DataTypes.BOOLEAN());
         FilterPredicate expectPredicate = FilterApi.eq(FilterApi.longColumn("long1"), 10L);
 
-        FilterPredicate actualPredicate = ParquetFilters.toParquetPredicate(equalExpression);
+        FilterPredicate actualPredicate = parquetFilters.toParquetPredicate(equalExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -68,7 +69,7 @@ public class ParquetFiltersTest {
                 new CallExpression(
                         BuiltInFunctionDefinitions.NOT_EQUALS, args, DataTypes.BOOLEAN());
         expectPredicate = FilterApi.notEq(FilterApi.longColumn("long1"), 10L);
-        actualPredicate = ParquetFilters.toParquetPredicate(notEqualExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(notEqualExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -77,7 +78,7 @@ public class ParquetFiltersTest {
                 new CallExpression(
                         BuiltInFunctionDefinitions.GREATER_THAN, args, DataTypes.BOOLEAN());
         expectPredicate = FilterApi.gt(FilterApi.longColumn("long1"), 10L);
-        actualPredicate = ParquetFilters.toParquetPredicate(greaterExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(greaterExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -88,7 +89,7 @@ public class ParquetFiltersTest {
                         args,
                         DataTypes.BOOLEAN());
         expectPredicate = FilterApi.gtEq(FilterApi.longColumn("long1"), 10L);
-        actualPredicate = ParquetFilters.toParquetPredicate(greaterEqualExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(greaterEqualExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -96,7 +97,7 @@ public class ParquetFiltersTest {
         CallExpression lessExpression =
                 new CallExpression(BuiltInFunctionDefinitions.LESS_THAN, args, DataTypes.BOOLEAN());
         expectPredicate = FilterApi.lt(FilterApi.longColumn("long1"), 10L);
-        actualPredicate = ParquetFilters.toParquetPredicate(lessExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(lessExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -105,7 +106,7 @@ public class ParquetFiltersTest {
                 new CallExpression(
                         BuiltInFunctionDefinitions.LESS_THAN_OR_EQUAL, args, DataTypes.BOOLEAN());
         expectPredicate = FilterApi.ltEq(FilterApi.longColumn("long1"), 10L);
-        actualPredicate = ParquetFilters.toParquetPredicate(lessEqualExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(lessEqualExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
     }
@@ -143,8 +144,9 @@ public class ParquetFiltersTest {
                 FilterApi.and(
                         FilterApi.gt(FilterApi.longColumn("long1"), 10L),
                         FilterApi.eq(
-                                FilterApi.binaryColumn("string1"), Binary.fromString("string1")));
-        FilterPredicate actualPredicate = ParquetFilters.toParquetPredicate(callExpression);
+                                FilterApi.binaryColumn("string1"),
+                                Binary.fromReusedByteArray("string1".getBytes())));
+        FilterPredicate actualPredicate = parquetFilters.toParquetPredicate(callExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -154,12 +156,13 @@ public class ParquetFiltersTest {
                         BuiltInFunctionDefinitions.OR,
                         Arrays.asList(gtExpression, equalExpression),
                         DataTypes.BOOLEAN());
-        actualPredicate = ParquetFilters.toParquetPredicate(callExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(callExpression);
         expectPredicate =
                 FilterApi.or(
                         FilterApi.gt(FilterApi.longColumn("long1"), 10L),
                         FilterApi.eq(
-                                FilterApi.binaryColumn("string1"), Binary.fromString("string1")));
+                                FilterApi.binaryColumn("string1"),
+                                Binary.fromReusedByteArray("string1".getBytes())));
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
     }
@@ -184,7 +187,7 @@ public class ParquetFiltersTest {
                         DataTypes.BOOLEAN());
         FilterPredicate expectPredicate =
                 FilterApi.not(FilterApi.gt(FilterApi.longColumn("long1"), 10L));
-        FilterPredicate actualPredicate = ParquetFilters.toParquetPredicate(notExpression);
+        FilterPredicate actualPredicate = parquetFilters.toParquetPredicate(notExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -195,7 +198,7 @@ public class ParquetFiltersTest {
         CallExpression nullExpression =
                 new CallExpression(BuiltInFunctionDefinitions.IS_NULL, args1, DataTypes.BOOLEAN());
         expectPredicate = FilterApi.eq(FilterApi.longColumn("long1"), null);
-        actualPredicate = ParquetFilters.toParquetPredicate(nullExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(nullExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
 
@@ -204,27 +207,9 @@ public class ParquetFiltersTest {
                 new CallExpression(
                         BuiltInFunctionDefinitions.IS_NOT_NULL, args1, DataTypes.BOOLEAN());
         expectPredicate = FilterApi.not(FilterApi.eq(FilterApi.longColumn("long1"), null));
-        actualPredicate = ParquetFilters.toParquetPredicate(notNullExpression);
+        actualPredicate = parquetFilters.toParquetPredicate(notNullExpression);
         assertNotNull(actualPredicate);
         assertEquals(expectPredicate.toString(), actualPredicate.toString());
-    }
-
-    @Test
-    public void testUnSupportedPushDown() {
-        List<ResolvedExpression> args = new ArrayList<>();
-
-        // not support decimal
-        FieldReferenceExpression fieldReferenceExpression =
-                new FieldReferenceExpression("decimal", DataTypes.DECIMAL(10, 1), 0, 0);
-        ValueLiteralExpression valueLiteralExpression =
-                new ValueLiteralExpression(new BigDecimal(100));
-        args.add(fieldReferenceExpression);
-        args.add(valueLiteralExpression);
-
-        CallExpression equalExpression =
-                new CallExpression(BuiltInFunctionDefinitions.EQUALS, args, DataTypes.BOOLEAN());
-        FilterPredicate filterPredicate = ParquetFilters.toParquetPredicate(equalExpression);
-        assertNull(filterPredicate);
     }
 
     @Test
@@ -256,7 +241,7 @@ public class ParquetFiltersTest {
                         Arrays.asList(gtExpression, equalExpression),
                         DataTypes.BOOLEAN());
 
-        FilterPredicate predicate = ParquetFilters.toParquetPredicate(callExpression);
+        FilterPredicate predicate = parquetFilters.toParquetPredicate(callExpression);
 
         assertTrue(
                 ParquetFilters.isFilterFieldsIn(

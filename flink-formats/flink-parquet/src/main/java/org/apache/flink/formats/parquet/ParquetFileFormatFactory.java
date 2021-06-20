@@ -79,8 +79,10 @@ public class ParquetFileFormatFactory implements BulkReaderFormatFactory, BulkWr
                 List<FilterPredicate> parquetPredicates = new ArrayList<>();
 
                 if (filters != null) {
+                    ParquetFilters parquetFilters =
+                            new ParquetFilters(formatOptions.get(UTC_TIMEZONE));
                     for (Expression pred : filters) {
-                        FilterPredicate parquetPred = ParquetFilters.toParquetPredicate(pred);
+                        FilterPredicate parquetPred = parquetFilters.toParquetPredicate(pred);
                         if (parquetPred != null) {
                             parquetPredicates.add(parquetPred);
                         }
