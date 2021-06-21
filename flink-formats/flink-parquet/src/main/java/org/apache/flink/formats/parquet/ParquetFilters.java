@@ -19,6 +19,9 @@
 package org.apache.flink.formats.parquet;
 
 import org.apache.flink.api.java.tuple.Tuple2;
+import org.apache.flink.table.data.DecimalData;
+import org.apache.flink.table.data.DecimalDataUtils;
+import org.apache.flink.table.data.TimestampData;
 import org.apache.flink.table.expressions.CallExpression;
 import org.apache.flink.table.expressions.Expression;
 import org.apache.flink.table.expressions.FieldReferenceExpression;
@@ -26,6 +29,7 @@ import org.apache.flink.table.expressions.ValueLiteralExpression;
 import org.apache.flink.table.functions.BuiltInFunctionDefinitions;
 import org.apache.flink.table.functions.FunctionDefinition;
 import org.apache.flink.table.types.DataType;
+import org.apache.flink.table.types.logical.DecimalType;
 import org.apache.flink.table.types.logical.LogicalTypeRoot;
 
 import org.apache.flink.shaded.guava18.com.google.common.collect.ImmutableMap;
@@ -39,19 +43,33 @@ import org.slf4j.LoggerFactory;
 
 import java.io.Serializable;
 import java.lang.reflect.Method;
+import java.math.BigDecimal;
+import java.math.BigInteger;
+import java.sql.Date;
+import java.sql.Time;
+import java.sql.Timestamp;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.LocalTime;
+import java.util.Arrays;
 import java.util.Collection;
 import java.util.Optional;
 import java.util.function.BiFunction;
 import java.util.function.Function;
 
+import static org.apache.flink.formats.parquet.row.ParquetRowDataWriter.timestampToInt96;
+import static org.apache.flink.formats.parquet.utils.ParquetSchemaConverter.computeMinBytesForDecimalPrecision;
 import static org.apache.parquet.filter2.predicate.Operators.Column;
 
-/** Utility class that provides helper methods to work with Parquet Filter PushDown. */
+/**
+ * Class that converts {@link Expression} to {@link FilterPredicate} to work with Parquet Filter
+ * PushDown.
+ */
 public class ParquetFilters {
     private static final Logger LOG = LoggerFactory.getLogger(ParquetFilters.class);
 
-    private static final ImmutableMap<FunctionDefinition, Function<CallExpression, FilterPredicate>>
-            FILTERS =
+    private final ImmutableMap<FunctionDefinition, Function<CallExpression, FilterPredicate>>
+            filters =
                     new ImmutableMap.Builder<
                                     FunctionDefinition, Function<CallExpression, FilterPredicate>>()
                             .put(
@@ -60,9 +78,9 @@ public class ParquetFilters {
                             .put(
                                     BuiltInFunctionDefinitions.OR,
                                     call -> convertBinaryLogical(call, FilterApi::or))
-                            .put(BuiltInFunctionDefinitions.NOT, ParquetFilters::not)
-                            .put(BuiltInFunctionDefinitions.IS_NULL, ParquetFilters::isNUll)
-                            .put(BuiltInFunctionDefinitions.IS_NOT_NULL, ParquetFilters::isNotNull)
+                            .put(BuiltInFunctionDefinitions.NOT, this::not)
+                            .put(BuiltInFunctionDefinitions.IS_NULL, this::isNUll)
+                            .put(BuiltInFunctionDefinitions.IS_NOT_NULL, this::isNotNull)
                             .put(
                                     BuiltInFunctionDefinitions.EQUALS,
                                     call ->
@@ -101,7 +119,33 @@ public class ParquetFilters {
                                                     ParquetFilters::gtEq))
                             .build();
 
-    /** To check all the fields in filterPredicate are in given fields. */
+    private final boolean utcTimestamp;
+
+    public ParquetFilters(boolean utcTimestamp) {
+        this.utcTimestamp = utcTimestamp;
+    }
+
+    public FilterPredicate toParquetPredicate(Expression expression) {
+        if (expression instanceof CallExpression) {
+            CallExpression callExp = (CallExpression) expression;
+            if (filters.get(callExp.getFunctionDefinition()) == null) {
+                // unsupported predicate
+                LOG.debug(
+                        "Unsupported predicate [{}] cannot be pushed into ParquetFileFormatFactory.",
+                        expression);
+                return null;
+            }
+            return filters.get(callExp.getFunctionDefinition()).apply(callExp);
+        } else {
+            // unsupported predicate
+            LOG.debug(
+                    "Unsupported predicate [{}] cannot be pushed into ParquetFileFormatFactory.",
+                    expression);
+            return null;
+        }
+    }
+
+    /** Check whether all the fields in filterPredicate are in given fields. */
     public static boolean isFilterFieldsIn(
             FilterPredicate filterPredicate, Collection<String> fields) {
         if (filterPredicate instanceof Operators.And) {
@@ -131,7 +175,7 @@ public class ParquetFilters {
         }
     }
 
-    private static FilterPredicate convertBinaryLogical(
+    private FilterPredicate convertBinaryLogical(
             CallExpression callExp,
             BiFunction<FilterPredicate, FilterPredicate, FilterPredicate> func) {
         if (callExp.getChildren().size() < 2) {
@@ -144,14 +188,14 @@ public class ParquetFilters {
         return (c1 == null || c2 == null) ? null : func.apply(c1, c2);
     }
 
-    private static FilterPredicate convertBinaryOperation(
+    private FilterPredicate convertBinaryOperation(
             CallExpression callExp,
             Function<Tuple2<Column, Comparable>, FilterPredicate> func,
             Function<Tuple2<Column, Comparable>, FilterPredicate> reverseFunc) {
         if (!isBinaryValid(callExp)) {
             // not a valid predicate
             LOG.debug(
-                    "Unsupported predicate [{}] cannot be pushed into ParquetFileFormatFactory.",
+                    "Unsupported  predicate[{}] cannot be pushed into ParquetFileFormatFactory.",
                     callExp);
             return null;
         }
@@ -184,7 +228,7 @@ public class ParquetFilters {
                 : reverseFunc.apply(columnLiteralPair);
     }
 
-    private static FilterPredicate not(CallExpression callExp) {
+    private FilterPredicate not(CallExpression callExp) {
         if (callExp.getChildren().size() != 1) {
             // not a valid predicate
             LOG.debug(
@@ -196,7 +240,7 @@ public class ParquetFilters {
         return predicate != null ? FilterApi.not(predicate) : null;
     }
 
-    private static FilterPredicate isNUll(CallExpression callExp) {
+    private FilterPredicate isNUll(CallExpression callExp) {
         if (!isUnaryValid(callExp)) {
             // not a valid predicate
             LOG.debug(
@@ -225,7 +269,7 @@ public class ParquetFilters {
         return eq(new Tuple2<>(column, null));
     }
 
-    private static FilterPredicate isNotNull(CallExpression callExp) {
+    private FilterPredicate isNotNull(CallExpression callExp) {
         FilterPredicate isNUllPredicate = isNUll(callExp);
         return isNUllPredicate == null ? null : FilterApi.not(isNUllPredicate);
     }
@@ -296,47 +340,32 @@ public class ParquetFilters {
         return FilterApi.gtEq((Column & Operators.SupportsLtGt) column, columnPair.f1);
     }
 
-    public static FilterPredicate toParquetPredicate(Expression expression) {
-        if (expression instanceof CallExpression) {
-            CallExpression callExp = (CallExpression) expression;
-            if (FILTERS.get(callExp.getFunctionDefinition()) == null) {
-                // unsupported predicate
-                LOG.debug(
-                        "Unsupported predicate [{}] cannot be pushed into ParquetFileFormatFactory.",
-                        expression);
-                return null;
-            }
-            return FILTERS.get(callExp.getFunctionDefinition()).apply(callExp);
-        } else {
-            // unsupported predicate
-            LOG.debug(
-                    "Unsupported predicate [{}] cannot be pushed into ParquetFileFormatFactory.",
-                    expression);
-            return null;
-        }
-    }
-
     /** Get the tuple (Column, Comparable) required to construct the FilterPredicate. */
-    private static Tuple2<Column, Comparable> getColumnLiteralPair(
-            String colName, DataType dataType, Serializable literalValue) {
-        Column column = getColumn(colName, dataType);
+    private Tuple2<Column, Comparable> getColumnLiteralPair(
+            String colName, DataType colType, Serializable literalValue) {
+        Column column = getColumn(colName, colType);
         if (column == null) {
             return null;
         }
-        Comparable literal = castLiteral(column.getColumnType(), literalValue);
+        Comparable literal = castLiteral(colType, literalValue);
+        if (literal == null) {
+            return null;
+        }
         return Tuple2.of(column, literal);
     }
 
     /**
-     * Return the corresponding push down {@code Column} in {@link FilterApi} for parquet format
-     * according to the data type. If the datatype isn't supported to push down, return null.
+     * Return the corresponding push down {@link Column} in {@link FilterApi} for parquet format
+     * according to the column's data type. Return null if encounter unknown data type.
      */
-    private static Column getColumn(String colName, DataType dataType) {
-        LogicalTypeRoot ltype = dataType.getLogicalType().getTypeRoot();
+    private static Column getColumn(String colName, DataType colType) {
+        LogicalTypeRoot ltype = colType.getLogicalType().getTypeRoot();
         switch (ltype) {
             case TINYINT:
             case SMALLINT:
             case INTEGER:
+            case DATE:
+            case TIME_WITHOUT_TIME_ZONE:
                 return FilterApi.intColumn(colName);
             case BIGINT:
                 return FilterApi.longColumn(colName);
@@ -348,62 +377,126 @@ public class ParquetFilters {
                 return FilterApi.booleanColumn(colName);
             case CHAR:
             case VARCHAR:
+            case BINARY:
+            case VARBINARY:
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+            case TIMESTAMP_WITH_LOCAL_TIME_ZONE:
+            case DECIMAL:
                 return FilterApi.binaryColumn(colName);
             default:
+                LOG.warn(
+                        "Can't get filter column in parquet format for unKnown data type {}.",
+                        ltype);
                 return null;
         }
     }
 
     /**
-     * Cast the literal value to the given type needed in parquet filter.
+     * Cast the literal value to the corresponding value needed in parquet filter.
      *
-     * @param typeClass the given type need to cast
-     * @param literal the literal to be cast
-     * @return the cast value
+     * @param colType the data type of the column
+     * @param literal the literal value of the column needed to be casted
+     * @return the casted value
      */
-    private static <T extends Comparable> Comparable castLiteral(
-            Class<T> typeClass, Serializable literal) {
-        if (typeClass == Integer.class) {
-            return castLiteralToNumber(literal).intValue();
-        } else if (typeClass == Long.class) {
-            return castLiteralToNumber(literal).longValue();
-        } else if (typeClass == Float.class) {
-            return castLiteralToNumber(literal).floatValue();
-        } else if (typeClass == Double.class) {
-            return castLiteralToNumber(literal).doubleValue();
-        } else if (typeClass == Boolean.class) {
-            return castLiteralToBoolean(literal);
-        } else if (typeClass == Binary.class) {
-            return castLiteralToBinary(literal);
-        } else {
-            throw new IllegalArgumentException("Unknown literal type " + typeClass.getName());
+    private <T extends Comparable> Comparable castLiteral(DataType colType, Serializable literal) {
+        LogicalTypeRoot ltype = colType.getLogicalType().getTypeRoot();
+        switch (ltype) {
+            case TINYINT:
+            case SMALLINT:
+            case INTEGER:
+                return ((Number) literal).intValue();
+            case BIGINT:
+                return ((Number) literal).longValue();
+            case FLOAT:
+                return ((Number) literal).floatValue();
+            case DOUBLE:
+                return ((Number) literal).doubleValue();
+            case BOOLEAN:
+                return (Boolean) literal;
+            case CHAR:
+            case VARCHAR:
+                return Binary.fromReusedByteArray(((String) literal).getBytes());
+            case BINARY:
+            case VARBINARY:
+                return Binary.fromReusedByteArray((byte[]) literal);
+            case DECIMAL:
+                final int precision = ((DecimalType) colType.getLogicalType()).getPrecision();
+                final int scale = ((DecimalType) colType.getLogicalType()).getScale();
+                final DecimalData value =
+                        literal instanceof BigInteger
+                                ? DecimalData.fromBigDecimal(
+                                        new BigDecimal((BigInteger) literal, 0), precision, scale)
+                                : DecimalData.fromBigDecimal(
+                                        (BigDecimal) literal, precision, scale);
+                if (value == null) {
+                    LOG.warn("The precision overflows for decimal {} in parquet format.", literal);
+                    return null;
+                }
+                return castDecimalToBinary(value);
+            case DATE:
+                return (int)
+                        (literal instanceof LocalDate
+                                ? ((LocalDate) literal).toEpochDay()
+                                : (((Date) literal).toLocalDate().toEpochDay()));
+            case TIME_WITHOUT_TIME_ZONE:
+                return (int)
+                        (literal instanceof LocalTime
+                                ? ((LocalTime) literal).toNanoOfDay() / 1_000_000L
+                                : (((Time) literal).toLocalTime().toNanoOfDay() / 1_000_000L));
+            case TIMESTAMP_WITH_TIME_ZONE:
+            case TIMESTAMP_WITHOUT_TIME_ZONE:
+                TimestampData timestampData =
+                        literal instanceof LocalDateTime
+                                ? TimestampData.fromLocalDateTime((LocalDateTime) literal)
+                                : TimestampData.fromTimestamp((Timestamp) literal);
+                return timestampToInt96(timestampData, utcTimestamp);
+            default:
+                LOG.warn("Can't cast literal to unknown data type {} in parquet format.", ltype);
+                return null;
         }
     }
 
-    private static Number castLiteralToNumber(Serializable literal) {
-        if (literal instanceof Number) {
-            return ((Number) literal);
+    private Binary castDecimalToBinary(DecimalData decimalData) {
+        int precision = decimalData.precision();
+        int numBytes = computeMinBytesForDecimalPrecision(precision);
+        byte[] decimalBytes;
+        // 1 <= precision <= 18, writes as FIXED_LEN_BYTE_ARRAY
+        // optimizer for UnscaledBytesWriter
+        if (DecimalDataUtils.is32BitDecimal(precision)
+                || DecimalDataUtils.is64BitDecimal(precision)) {
+            decimalBytes = longUnscaledBytesEncode(decimalData, numBytes);
         } else {
-            throw new IllegalArgumentException(
-                    "A predicate on a NUMERIC column requires a NUMERIC literal.");
+            // 19 <= precision <= 38, writes as FIXED_LEN_BYTE_ARRAY
+            decimalBytes = unscaledBytesEncode(decimalData, numBytes);
         }
+        return Binary.fromReusedByteArray(decimalBytes, 0, numBytes);
     }
 
-    private static Boolean castLiteralToBoolean(Serializable literal) {
-        if (literal instanceof Boolean) {
-            return (Boolean) literal;
-        } else {
-            throw new IllegalArgumentException(
-                    "A predicate on a BOOLEAN column requires a BOOLEAN literal.");
+    private byte[] longUnscaledBytesEncode(DecimalData decimalData, int numBytes) {
+        byte[] decimalBuffer = new byte[numBytes];
+        int initShift = 8 * (numBytes - 1);
+        long unscaledLong = decimalData.toUnscaledLong();
+        int i = 0;
+        int shift = initShift;
+        while (i < numBytes) {
+            decimalBuffer[i] = (byte) (unscaledLong >> shift);
+            i += 1;
+            shift -= 8;
         }
+        return decimalBuffer;
     }
 
-    private static Binary castLiteralToBinary(Serializable literal) {
-        if (literal instanceof String) {
-            return Binary.fromString((String) literal);
+    private byte[] unscaledBytesEncode(DecimalData decimalData, int numBytes) {
+        byte[] decimalBuffer = new byte[numBytes];
+        byte[] bytes = decimalData.toUnscaledBytes();
+        if (bytes.length == numBytes) {
+            // Avoid copy.
+            return decimalData.toUnscaledBytes();
         } else {
-            throw new IllegalArgumentException(
-                    "A predicate on a STRING column requires a STRING literal.");
+            byte signByte = bytes[0] < 0 ? (byte) -1 : (byte) 0;
+            Arrays.fill(decimalBuffer, 0, numBytes - bytes.length, signByte);
+            System.arraycopy(bytes, 0, decimalBuffer, numBytes - bytes.length, bytes.length);
+            return decimalBuffer;
         }
     }
 
